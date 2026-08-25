@@ -1,0 +1,13 @@
+ts_code,category,risk_bucket,effective_start,effective_end,classification_basis,reviewed
+510050.SH,scale,low_risk,2005-02-23,,benchmark_manual_review_20260807,True
+510300.SH,scale,low_risk,2012-05-28,,benchmark_manual_review_20260807,True
+510500.SH,scale,low_risk,2013-03-15,,benchmark_manual_review_20260807,True
+512100.SH,scale,low_risk,2016-11-04,,benchmark_manual_review_20260807,True
+512660.SH,industry,risk,2016-08-08,,benchmark_manual_review_20260807,True
+512880.SH,industry,risk,2016-08-08,,benchmark_manual_review_20260807,True
+512170.SH,industry,risk,2019-06-17,,benchmark_manual_review_20260807,True
+512480.SH,industry,risk,2019-06-12,,benchmark_manual_review_20260807,True
+512690.SH,industry,risk,2019-05-06,,benchmark_manual_review_20260807,True
+512760.SH,industry,risk,2019-06-12,,benchmark_manual_review_20260807,True
+515030.SH,theme,risk,2020-03-04,,benchmark_manual_review_20260807,True
+515790.SH,theme,risk,2020-12-18,,benchmark_manual_review_20260807,True

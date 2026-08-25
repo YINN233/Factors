@@ -1,0 +1,41 @@
+# Python environments and caches
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.mplconfig/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~
+
+# Local datasets and generated experiment outputs
+data/
+outputs/
+
+# Bulk reference attachments (keep the summary and index spreadsheets)
+股指期货参考报告260804/**/*.pdf
+股指期货参考报告260804/**/*.pptx
+股指期货参考报告260804/**/__MACOSX/
+
+# Temporary files and logs
+*.log
+*.tmp
+*.swp
