@@ -263,21 +263,20 @@ def apply_structural_shrinkage(
         )
         group_stats = temporary.groupby(["industry", "bucket"], dropna=False)["variance"].agg(["median", "count"])
         industry_stats = temporary.groupby("industry", dropna=False)["variance"].agg(["median", "count"])
-        for row_index in idx:
-            industry = temporary.at[row_index, "industry"]
-            size_bucket = temporary.at[row_index, "bucket"]
-            group_key = (industry, size_bucket)
-            if group_key in group_stats.index and group_stats.loc[group_key, "count"] >= group_minimum:
-                prior = float(group_stats.loc[group_key, "median"])
-                level = "industry_size"
-            elif industry in industry_stats.index and industry_stats.loc[industry, "count"] >= group_minimum:
-                prior = float(industry_stats.loc[industry, "median"])
-                level = "industry"
-            else:
-                prior = market_prior
-                level = "market"
-            out.at[row_index, "specific_prior_variance"] = prior
-            out.at[row_index, "specific_prior_level"] = level
+        group_prior = temporary.set_index(["industry", "bucket"]).index.map(
+            group_stats["median"].where(group_stats["count"] >= group_minimum)
+        )
+        industry_prior = temporary["industry"].map(
+            industry_stats["median"].where(industry_stats["count"] >= group_minimum)
+        )
+        group_prior = pd.Series(group_prior.to_numpy(dtype=float), index=idx)
+        industry_prior = pd.Series(industry_prior.to_numpy(dtype=float), index=idx)
+        selected_prior = group_prior.fillna(industry_prior).fillna(market_prior)
+        level = pd.Series("market", index=idx, dtype="string")
+        level.loc[industry_prior.notna()] = "industry"
+        level.loc[group_prior.notna()] = "industry_size"
+        out.loc[idx, "specific_prior_variance"] = selected_prior
+        out.loc[idx, "specific_prior_level"] = level
 
     observations = pd.to_numeric(out["specific_effective_observations"], errors="coerce").fillna(0.0)
     reliability = (observations / float(reliability_target)).clip(lower=minimum_reliability, upper=1.0)

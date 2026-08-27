@@ -237,6 +237,12 @@ def compute_raw_descriptors_v2(panel: pd.DataFrame) -> pd.DataFrame:
         _num(frame, "total_liab"),
         _num(frame, "total_liab") + total_mv_rmb,
     )
+    output["book_leverage"] = _num(frame, "book_leverage").fillna(
+        _safe_div(
+            _num(frame, "total_assets"),
+            _num(frame, "total_assets") - _num(frame, "total_liab"),
+        )
+    )
 
     specs = descriptor_specs_v2()
     for spec in specs:
@@ -352,22 +358,32 @@ def compute_v2_exposures(
     panel: pd.DataFrame,
     minimum_descriptor_coverage: float = 0.70,
     min_effective_weight: float = 0.60,
+    code_chunk_size: int = 100,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build standardized descriptor and style exposures with diagnostics."""
 
     frame = panel.copy()
     frame["trade_date"] = pd.to_datetime(frame["trade_date"])
     frame = frame.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
-    raw = compute_raw_descriptors_v2(frame)
-    raw["_sqrt_mv_weight"] = np.sqrt(_num(frame, "total_mv").clip(lower=0)).replace(0, np.nan)
-    if "csi500_member" in frame.columns:
-        member = frame["csi500_member"].fillna(False).astype(bool)
-        raw = raw.loc[member].reset_index(drop=True)
+    codes = frame["ts_code"].drop_duplicates().tolist()
+    raw_chunks = []
+    for start in range(0, len(codes), code_chunk_size):
+        selected_codes = set(codes[start: start + code_chunk_size])
+        chunk = frame[frame["ts_code"].isin(selected_codes)].copy()
+        chunk = chunk.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+        raw_chunk = compute_raw_descriptors_v2(chunk)
+        raw_chunk["_sqrt_mv_weight"] = np.sqrt(_num(chunk, "total_mv").clip(lower=0)).replace(0, np.nan)
+        if "csi500_member" in chunk.columns:
+            member = chunk["csi500_member"].fillna(False).astype(bool)
+            raw_chunk = raw_chunk.loc[member].copy()
+        raw_chunks.append(raw_chunk)
+    raw = pd.concat(raw_chunks, ignore_index=True) if raw_chunks else pd.DataFrame()
+    del frame, raw_chunks
     descriptor_columns = [spec.name for spec in descriptor_specs_v2()]
 
-    standardized = raw[["trade_date", "ts_code", "_sqrt_mv_weight"]].copy()
+    standardized = raw
     for column in descriptor_columns:
-        standardized[column] = robust_standardize_by_date(raw, column, "_sqrt_mv_weight")
+        standardized[column] = robust_standardize_by_date(standardized, column, "_sqrt_mv_weight")
 
     standardized["nonlinear_size_residual"] = weighted_residualize_by_date(
         standardized,

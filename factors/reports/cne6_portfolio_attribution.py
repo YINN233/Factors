@@ -55,9 +55,12 @@ def _covariance_matrix_from_rows(sub: pd.DataFrame | None, factors: list[str]) -
 def _covariance_rows_by_target_date(
     covariance: pd.DataFrame,
     target_dates: pd.Series | pd.Index | list[pd.Timestamp],
-    window: int,
+    window: int | None,
 ) -> dict[pd.Timestamp, pd.DataFrame]:
-    cov_window = covariance[covariance["window"] == window].copy()
+    if window is None or "window" not in covariance.columns:
+        cov_window = covariance.copy()
+    else:
+        cov_window = covariance[covariance["window"] == window].copy()
     if cov_window.empty:
         return {}
     cov_window["trade_date"] = pd.to_datetime(cov_window["trade_date"])
@@ -81,6 +84,7 @@ def _active_vector(
     active: pd.Series,
     style_cols: list[str],
     in_model: pd.Series | None = None,
+    industry_col: str = "industry",
 ) -> tuple[dict[str, float], list[dict]]:
     exposures: dict[str, float] = {}
     rows = []
@@ -91,7 +95,7 @@ def _active_vector(
         value = float((active[in_model] * pd.to_numeric(sub.loc[in_model, col], errors="coerce").fillna(0.0)).sum())
         exposures[col] = value
         rows.append({"factor": col, "factor_type": "style", "active_exposure": value})
-    industry = sub.loc[in_model, "industry"].fillna("unknown").astype(str) if "industry" in sub.columns else pd.Series("unknown", index=sub.index[in_model])
+    industry = sub.loc[in_model, industry_col].fillna("unknown").astype(str) if industry_col in sub.columns else pd.Series("unknown", index=sub.index[in_model])
     for ind, idx in industry.groupby(industry, sort=False).groups.items():
         factor = f"industry_{ind}"
         value = float(active.loc[list(idx)].sum())
@@ -119,7 +123,9 @@ def run_attribution(
     specific_risk: pd.DataFrame,
     daily_returns: pd.DataFrame | None = None,
     benchmark_col: str = "csi500_index_weight",
-    window: int = 252,
+    window: int | None = 252,
+    industry_col: str = "industry",
+    specific_variance_col: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     weights = weights.copy()
     weights["trade_date"] = pd.to_datetime(weights["trade_date"])
@@ -131,7 +137,13 @@ def run_attribution(
     covariance["trade_date"] = pd.to_datetime(covariance["trade_date"])
     specific_risk = specific_risk.copy()
     specific_risk["trade_date"] = pd.to_datetime(specific_risk["trade_date"])
-    style_cols = [c for c in style.columns if c.startswith("style_") and not c.endswith("_n")]
+    style_cols = [
+        c
+        for c in style.columns
+        if c.startswith("style_")
+        and not c.endswith("_n")
+        and not c.endswith("_effective_weight")
+    ]
 
     exposure_rows = []
     risk_rows = []
@@ -167,7 +179,13 @@ def run_attribution(
             out_of_model_weight = float(port.loc[~in_model].sum())
             benchmark_model_weight = float(bench.loc[in_model].sum())
 
-            exposures, rows = _active_vector(sub_reset, active_reset, style_cols, in_model=in_model_reset)
+            exposures, rows = _active_vector(
+                sub_reset,
+                active_reset,
+                style_cols,
+                in_model=in_model_reset,
+                industry_col=industry_col,
+            )
             for row in rows:
                 row.update({"scenario": scenario, "trade_date": date})
                 exposure_rows.append(row)
@@ -191,11 +209,17 @@ def run_attribution(
             industry_var = float(vec.reindex(industry_factors, fill_value=0.0).to_numpy() @ cov.reindex(index=industry_factors, columns=industry_factors).fillna(0.0).to_numpy() @ vec.reindex(industry_factors, fill_value=0.0).to_numpy()) if industry_factors else 0.0
 
             sr_date = _latest_by_date(specific_risk, "trade_date", date).set_index("ts_code")
-            sr_col = f"specific_risk_{window}"
-            sr = pd.to_numeric(sr_date.reindex(idx)[sr_col], errors="coerce") if sr_col in sr_date.columns else pd.Series(np.nan, index=idx)
-            fallback = sr.median(skipna=True)
-            sr = sr.fillna(0.0 if pd.isna(fallback) else fallback)
-            specific_var = float(((active**2) * (sr**2)).sum())
+            if specific_variance_col is not None and specific_variance_col in sr_date.columns:
+                specific_variance = pd.to_numeric(
+                    sr_date.reindex(idx)[specific_variance_col], errors="coerce"
+                )
+            else:
+                sr_col = f"specific_risk_{window}"
+                sr = pd.to_numeric(sr_date.reindex(idx)[sr_col], errors="coerce") if sr_col in sr_date.columns else pd.Series(np.nan, index=idx)
+                specific_variance = sr**2
+            fallback = specific_variance.median(skipna=True)
+            specific_variance = specific_variance.fillna(0.0 if pd.isna(fallback) else fallback)
+            specific_var = float(((active**2) * specific_variance).sum())
             total_var = max(factor_var + specific_var, 0.0)
             predicted_te = float(np.sqrt(total_var * 252))
             realized_te = _realized_te(daily_returns, scenario, date)
@@ -203,7 +227,7 @@ def run_attribution(
                 {
                     "scenario": scenario,
                     "trade_date": date,
-                    "window": window,
+                    "window": window if window is not None else "eigenfactor",
                     "factor_var_daily": factor_var,
                     "style_var_daily": style_var,
                     "industry_var_daily": industry_var,
