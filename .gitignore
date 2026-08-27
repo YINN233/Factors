@@ -27,8 +27,8 @@ Thumbs.db
 *~
 
 # Local datasets and generated experiment outputs
-data/
-outputs/
+/data/
+/outputs/
 
 # Bulk reference attachments (keep the summary and index spreadsheets)
 股指期货参考报告260804/**/*.pdf
