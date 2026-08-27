@@ -29,6 +29,7 @@ CASHFLOW_INTERVAL_FIELDS = [
 ]
 BALANCE_FIELDS = [
     "total_assets", "total_liab", "total_hldr_eqy_exc_min_int", "total_hldr_eqy_inc_min_int",
+    "total_cur_assets", "total_cur_liab",
     "money_cap", "accounts_receiv", "inventories", "fix_assets", "intan_assets", "goodwill",
     "st_borr", "lt_borr", "notes_payable", "acct_payable",
 ]
@@ -288,6 +289,7 @@ def build_fundamental_features(inputs: dict[str, pd.DataFrame]) -> pd.DataFrame:
     df["roe_ttm"] = _safe_div(net_profit_ttm, equity)
     df["roa_ttm"] = _safe_div(net_profit_ttm, total_assets)
     df["gross_margin_ttm"] = _safe_div(revenue_ttm - _num(df, "oper_cost_ttm"), revenue_ttm)
+    df["operating_margin_ttm"] = _safe_div(_num(df, "operate_profit_ttm"), revenue_ttm)
     df["net_margin_ttm"] = _safe_div(net_profit_ttm, revenue_ttm)
     df["operating_cf_margin_ttm"] = _safe_div(ocf_ttm, revenue_ttm)
     df["cashflow_to_profit"] = _safe_div(ocf_ttm, net_profit_ttm)
@@ -297,6 +299,29 @@ def build_fundamental_features(inputs: dict[str, pd.DataFrame]) -> pd.DataFrame:
     df["revenue_yoy"] = _first_available(df, ["total_revenue_yoy", "revenue_yoy"])
     df["net_profit_yoy"] = _first_available(df, ["n_income_attr_p_yoy", "net_profit_yoy"])
     df["asset_turnover_yoy"] = df.groupby("ts_code", sort=False)["asset_turnover_ttm"].pct_change(4)
+    by_code = df.groupby("ts_code", sort=False)
+    working_capital = _num(df, "total_cur_assets") - _num(df, "total_cur_liab")
+    capex_ttm = _num(df, "c_pay_acq_const_fiolta_ttm")
+    eps = _num(df, "eps")
+    df["eps_growth"] = _safe_div(eps, eps.groupby(df["ts_code"], sort=False).shift(4)) - 1.0
+    df["roe_growth"] = df["roe_ttm"] - by_code["roe_ttm"].shift(4)
+    df["asset_growth"] = _safe_div(
+        total_assets,
+        total_assets.groupby(df["ts_code"], sort=False).shift(4),
+    ) - 1.0
+    df["capex_growth"] = _safe_div(capex_ttm, capex_ttm.groupby(df["ts_code"], sort=False).shift(4)) - 1.0
+    inventories = _num(df, "inventories")
+    df["inventory_growth"] = _safe_div(inventories, inventories.groupby(df["ts_code"], sort=False).shift(4)) - 1.0
+    df["working_capital_growth"] = _safe_div(
+        working_capital,
+        working_capital.groupby(df["ts_code"], sort=False).shift(4),
+    ) - 1.0
+    df["book_leverage"] = _safe_div(total_assets, equity)
+    df["inverse_interest_coverage"] = _safe_div(_num(df, "fin_exp_ttm"), _num(df, "operate_profit_ttm"))
+    reported_roa = _pct_to_decimal(_num(df, "roa"))
+    df["earnings_stability"] = -reported_roa.groupby(df["ts_code"], sort=False).transform(
+        lambda values: values.rolling(8, min_periods=8).std()
+    )
 
     for col in ["roe", "roe_dt", "roa", "grossprofit_margin", "netprofit_margin", "ocf_to_or", "ocf_to_profit", "debt_to_assets"]:
         if col in df.columns:
@@ -306,8 +331,10 @@ def build_fundamental_features(inputs: dict[str, pd.DataFrame]) -> pd.DataFrame:
         "ts_code", "end_date", "available_date", "total_revenue_ttm", "net_profit_ttm",
         "n_cashflow_act_ttm", "total_assets", "total_liab", "roe_ttm", "roa_ttm",
         "gross_margin_ttm", "net_margin_ttm", "operating_cf_margin_ttm",
-        "cashflow_to_profit", "debt_to_assets", "asset_turnover_ttm",
+        "operating_margin_ttm", "cashflow_to_profit", "debt_to_assets", "asset_turnover_ttm",
         "free_cashflow_ttm", "revenue_yoy", "net_profit_yoy", "asset_turnover_yoy",
+        "eps_growth", "roe_growth", "asset_growth", "capex_growth", "inventory_growth",
+        "working_capital_growth", "book_leverage", "inverse_interest_coverage", "earnings_stability",
     ] + [c for c in FINA_FIELDS if c in df.columns]
     return df[[c for c in dict.fromkeys(keep) if c in df.columns]].sort_values(["ts_code", "available_date"]).reset_index(drop=True)
 
@@ -340,6 +367,7 @@ ANALYST_FEATURE_COLUMNS = [
     "analyst_rating_score_180",
     "analyst_target_upside_180",
     "analyst_eps_revision_180",
+    "analyst_forward_eps_180",
 ]
 
 
@@ -472,6 +500,7 @@ def build_analyst_sentiment_features(daily: pd.DataFrame, report_rc: pd.DataFram
         out["analyst_rating_score_180"] = rating_score_180
         out["analyst_target_upside_180"] = target_upside_180
         out["analyst_eps_revision_180"] = eps_revision_180
+        out["analyst_forward_eps_180"] = eps_recent
         pieces.append(out)
 
     return pd.concat(pieces, ignore_index=True).sort_values(["trade_date", "ts_code"]).reset_index(drop=True)

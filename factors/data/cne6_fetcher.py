@@ -184,6 +184,7 @@ TABLE_FIELDS = {
     "balancesheet": [
         "ts_code", "ann_date", "f_ann_date", "end_date", "report_type", "comp_type",
         "total_assets", "total_liab", "total_hldr_eqy_exc_min_int", "total_hldr_eqy_inc_min_int",
+        "total_cur_assets", "total_cur_liab",
         "money_cap", "accounts_receiv", "inventories", "fix_assets", "intan_assets", "goodwill",
         "st_borr", "lt_borr", "notes_payable", "acct_payable",
     ],
