@@ -295,6 +295,236 @@ def run_factor_return_regression(
     return factor_returns, residuals, diagnostics
 
 
+def constrained_regression_work(
+    panel: pd.DataFrame,
+    style_exposures: pd.DataFrame,
+    industry_column: str = "industry_sw_l1_code",
+) -> tuple[pd.DataFrame, list[str]]:
+    """Align t returns with t-1 V2 style, industry, and size exposures."""
+
+    required_panel = {"trade_date", "ts_code", "returns_1d", industry_column, "total_mv"}
+    missing = sorted(required_panel.difference(panel.columns))
+    if missing:
+        raise ValueError(f"V2 regression panel missing required columns: {missing}")
+    required_styles = {"trade_date", "ts_code"}
+    missing_styles = sorted(required_styles.difference(style_exposures.columns))
+    if missing_styles:
+        raise ValueError(f"V2 style exposures missing required columns: {missing_styles}")
+
+    left = panel.copy()
+    right = style_exposures.copy()
+    left["trade_date"] = pd.to_datetime(left["trade_date"])
+    right["trade_date"] = pd.to_datetime(right["trade_date"])
+    style_columns = sorted(
+        column
+        for column in right.columns
+        if column.startswith("style_")
+        and not column.endswith("_n")
+        and not column.endswith("_effective_weight")
+    )
+    work = left.merge(
+        right[["trade_date", "ts_code"] + style_columns],
+        on=["trade_date", "ts_code"],
+        how="left",
+        validate="one_to_one",
+    )
+    work = work.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+    work["_y"] = pd.to_numeric(work["returns_1d"], errors="coerce")
+    lagged_columns = [industry_column, "total_mv"] + style_columns
+    work[lagged_columns] = work.groupby("ts_code", sort=False)[lagged_columns].shift(1)
+    if "csi500_member" in work.columns:
+        work = work.loc[work["csi500_member"].fillna(False).astype(bool)].copy()
+    return work.sort_values(["trade_date", "ts_code"]).reset_index(drop=True), style_columns
+
+
+def _constraint_null_space(constraint: np.ndarray, tolerance: float = 1e-12) -> np.ndarray:
+    _, singular_values, vh = np.linalg.svd(constraint, full_matrices=True)
+    rank = int((singular_values > tolerance).sum())
+    return vh[rank:].T
+
+
+def _constrained_date_regression(
+    sub: pd.DataFrame,
+    style_columns: list[str],
+    industry_column: str,
+    min_observations: int,
+) -> tuple[dict, pd.DataFrame]:
+    date = pd.Timestamp(sub["trade_date"].iloc[0])
+    work = sub.copy()
+    work["_y"] = pd.to_numeric(work["_y"], errors="coerce")
+    usable_styles = [
+        column
+        for column in style_columns
+        if column in work.columns and work[column].notna().mean() >= 0.50
+    ]
+    valid = work.dropna(subset=["_y", "ts_code", industry_column, "total_mv"]).copy()
+    valid["total_mv"] = pd.to_numeric(valid["total_mv"], errors="coerce")
+    valid = valid[valid["total_mv"] > 0]
+    if valid.empty:
+        return {"trade_date": date, "regression_status": "failed_empty"}, pd.DataFrame()
+
+    for column in usable_styles:
+        valid[column] = pd.to_numeric(valid[column], errors="coerce").fillna(0.0)
+    industries = valid[industry_column].astype("string")
+    industry_dummies = pd.get_dummies(industries, prefix="industry", dtype=float)
+    industry_columns = sorted(industry_dummies.columns)
+    industry_dummies = industry_dummies[industry_columns]
+    if len(industry_columns) < 2:
+        return {
+            "trade_date": date,
+            "regression_status": "failed_insufficient_industries",
+            "n_obs": int(len(valid)),
+            "n_industries": int(len(industry_columns)),
+        }, pd.DataFrame()
+
+    x_parts = [np.ones(len(valid), dtype=float)]
+    x_parts.extend(valid[column].to_numpy(dtype=float) for column in usable_styles)
+    x_parts.extend(industry_dummies.to_numpy(dtype=float).T)
+    x = np.column_stack(x_parts)
+    factor_columns = ["country"] + usable_styles + industry_columns
+    y = valid["_y"].to_numpy(dtype=float)
+    market_cap = valid["total_mv"].to_numpy(dtype=float)
+    regression_weights = np.sqrt(market_cap)
+
+    industry_caps = (
+        pd.DataFrame({"industry": industries.to_numpy(), "market_cap": market_cap})
+        .groupby("industry", sort=False)["market_cap"]
+        .sum()
+    )
+    industry_codes = [column.removeprefix("industry_") for column in industry_columns]
+    cap_weights = np.array([industry_caps.loc[code] for code in industry_codes], dtype=float)
+    cap_weights = cap_weights / cap_weights.sum()
+    constraint = np.zeros((1, x.shape[1]), dtype=float)
+    constraint[0, 1 + len(usable_styles):] = cap_weights
+    null_space = _constraint_null_space(constraint)
+
+    required = max(min_observations, null_space.shape[1] + 5)
+    if len(valid) < required:
+        return {
+            "trade_date": date,
+            "regression_status": "failed_insufficient_sample",
+            "n_obs": int(len(valid)),
+            "n_factors": int(x.shape[1]),
+            "n_industries": int(len(industry_columns)),
+            "n_styles": int(len(usable_styles)),
+        }, pd.DataFrame()
+
+    root_weight = np.sqrt(regression_weights / regression_weights.mean())
+    reduced_x = x @ null_space
+    weighted_x = reduced_x * root_weight[:, None]
+    weighted_y = y * root_weight
+    rank = int(np.linalg.matrix_rank(weighted_x))
+    if rank < reduced_x.shape[1]:
+        return {
+            "trade_date": date,
+            "regression_status": "failed_rank_deficient",
+            "n_obs": int(len(valid)),
+            "n_factors": int(x.shape[1]),
+            "n_industries": int(len(industry_columns)),
+            "n_styles": int(len(usable_styles)),
+            "matrix_rank": rank,
+        }, pd.DataFrame()
+
+    try:
+        theta, *_ = np.linalg.lstsq(weighted_x, weighted_y, rcond=None)
+    except np.linalg.LinAlgError:
+        return {
+            "trade_date": date,
+            "regression_status": "failed_linalg",
+            "n_obs": int(len(valid)),
+            "n_factors": int(x.shape[1]),
+            "n_industries": int(len(industry_columns)),
+            "n_styles": int(len(usable_styles)),
+        }, pd.DataFrame()
+
+    beta = null_space @ theta
+    fitted = x @ beta
+    residual = y - fitted
+    y_bar = float(np.average(y, weights=regression_weights))
+    ss_res = float(np.sum(regression_weights * residual**2))
+    ss_tot = float(np.sum(regression_weights * (y - y_bar) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-20 else np.nan
+    condition = float(np.linalg.cond(weighted_x))
+    constraint_residual = float((constraint @ beta)[0])
+
+    row = {
+        "trade_date": date,
+        "regression_status": "ok",
+        "n_obs": int(len(valid)),
+        "n_factors": int(x.shape[1]),
+        "n_industries": int(len(industry_columns)),
+        "n_styles": int(len(usable_styles)),
+        "matrix_rank": rank,
+        "r2": r2,
+        "adj_r2": 1.0 - (1.0 - r2) * (len(valid) - 1) / max(len(valid) - reduced_x.shape[1], 1) if np.isfinite(r2) else np.nan,
+        "condition_number": condition,
+        "industry_constraint_residual": constraint_residual,
+        "resid_mean": float(np.mean(residual)),
+        "resid_std": float(np.std(residual)),
+    }
+    row.update({column: float(value) for column, value in zip(factor_columns, beta)})
+    residuals = valid[["trade_date", "ts_code"]].copy()
+    residuals["fitted_return"] = fitted
+    residuals["specific_return"] = residual
+    return row, residuals
+
+
+def run_constrained_factor_return_regression(
+    panel: pd.DataFrame,
+    style_exposures: pd.DataFrame,
+    industry_column: str = "industry_sw_l1_code",
+    min_observations: int = 30,
+    fail_if_all_invalid: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Estimate V2 country, style, and all-industry returns with a linear constraint."""
+
+    work, style_columns = constrained_regression_work(
+        panel,
+        style_exposures,
+        industry_column=industry_column,
+    )
+    factor_rows = []
+    residual_frames = []
+    for _, sub in work.groupby("trade_date", sort=True):
+        row, residuals = _constrained_date_regression(
+            sub,
+            style_columns,
+            industry_column,
+            min_observations,
+        )
+        factor_rows.append(row)
+        if not residuals.empty:
+            residual_frames.append(residuals)
+    all_rows = pd.DataFrame(factor_rows)
+    if all_rows.empty or not all_rows.get("regression_status", pd.Series(dtype="string")).eq("ok").any():
+        if fail_if_all_invalid:
+            raise ValueError("no valid constrained regressions")
+    diagnostic_columns = [
+        "trade_date",
+        "regression_status",
+        "n_obs",
+        "n_factors",
+        "n_industries",
+        "n_styles",
+        "matrix_rank",
+        "r2",
+        "adj_r2",
+        "condition_number",
+        "industry_constraint_residual",
+        "resid_mean",
+        "resid_std",
+    ]
+    diagnostics = all_rows.reindex(columns=diagnostic_columns)
+    factor_columns = [column for column in all_rows.columns if column not in diagnostic_columns]
+    factor_returns = all_rows.reindex(columns=["trade_date"] + [column for column in factor_columns if column != "trade_date"])
+    residuals = (
+        pd.concat(residual_frames, ignore_index=True)
+        if residual_frames
+        else pd.DataFrame(columns=["trade_date", "ts_code", "fitted_return", "specific_return"])
+    )
+    return factor_returns, residuals, diagnostics
+
+
 def run(
     panel_path: Path,
     exposures_path: Path,
