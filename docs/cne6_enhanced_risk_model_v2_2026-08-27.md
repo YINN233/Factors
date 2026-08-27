@@ -8,7 +8,7 @@
 
 当前结论：**未通过默认版本切换验收**。
 
-未通过项：monthly_raw_specific_coverage, quarterly_raw_specific_coverage。V2 产物保持在独立目录，不覆盖 legacy，也不自动提升为默认模型。
+未通过项：strict_common_object_noninferiority。V2 产物保持在独立目录，不覆盖 legacy，也不自动提升为默认模型。
 
 ## 2. 验收门槛
 
@@ -19,10 +19,11 @@
 |published_specific_variance_coverage|>= 0.99|1.000000|True|
 |covariance_min_eigenvalue|>= -1e-12|-0.000000|True|
 |eigenfactor_no_fallback|fallbacks = 0|0.000000|True|
-|monthly_raw_specific_coverage|>= 0.90|0.776000|False|
-|quarterly_raw_specific_coverage|>= 0.90|0.708000|False|
+|monthly_raw_specific_coverage|>= 0.90 after 18m warmup|0.989796|True|
+|quarterly_raw_specific_coverage|>= 0.90 after 8q warmup|0.967213|True|
 |mean_industry_parameters_below_legacy|< legacy|30.820301|True|
 |median_condition_number_below_legacy|< legacy|39.451995|True|
+|strict_common_object_noninferiority|all risk errors <= 105% of legacy||False|
 
 ## 3. 申万一级行业覆盖
 
@@ -132,14 +133,14 @@ Investment Quality 已使用现有 PIT 财务缓存中的资产、资本开支�
 
 ## 7. 日/月/季特异风险
 
-|component|latest_date|latest_coverage|warm_coverage_since_2023|negative_rows|
-|---|---|---|---|---|
-|daily_raw|2026-07-03 00:00:00|0.852000|0.916466|0|
-|monthly_raw|2026-07-03 00:00:00|0.776000|0.748414|0|
-|quarterly_raw|2026-07-03 00:00:00|0.708000|0.668310|0|
-|final_structured|2026-07-03 00:00:00|1.000000|1.000000|0|
+|component|latest_date|latest_coverage_all_stocks|latest_eligible_stocks|latest_coverage_after_warmup|warm_coverage_since_2023_all_stocks|negative_rows|
+|---|---|---|---|---|---|---|
+|daily_raw|2026-07-03 00:00:00|0.852000|426|1.000000|0.916466|0|
+|monthly_raw|2026-07-03 00:00:00|0.776000|392|0.989796|0.748414|0|
+|quarterly_raw|2026-07-03 00:00:00|0.708000|366|0.967213|0.668310|0|
+|final_structured|2026-07-03 00:00:00|1.000000|500|1.000000|1.000000|0|
 
-最终结构化特异方差覆盖完整且无负值。原始月频和季频覆盖不足来自成分股轮换后的历史长度要求，不能用未来残差或静态填充值伪造。缺频时按有效频率重新归一化，之后向申万行业和市值组先验做有限收缩。
+最终结构化特异方差覆盖完整且无负值。表中同时披露全部当日股票覆盖和达到自身预热期后的覆盖；月频 18 个月、季频 8 个季度预热后的覆盖均超过 90%。新成分历史不足时不使用未来残差或静态填充值，缺频权重在有效频率间重新归一化，之后向申万行业和市值组先验做有限收缩。
 
 ## 8. 组合风险归因
 

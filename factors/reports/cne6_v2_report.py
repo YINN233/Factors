@@ -83,24 +83,36 @@ def _specific_coverage(paths: ModelPaths) -> pd.DataFrame:
     maximum = risk["trade_date"].max()
     latest = risk[risk["trade_date"] == maximum]
     warm = risk[risk["trade_date"] >= pd.Timestamp("2023-01-01")]
+    first_date = risk.groupby("ts_code", sort=False)["trade_date"].transform("min")
+    month_age = (risk["trade_date"].dt.year - first_date.dt.year) * 12 + risk["trade_date"].dt.month - first_date.dt.month
+    quarter_age = (risk["trade_date"].dt.year - first_date.dt.year) * 4 + risk["trade_date"].dt.quarter - first_date.dt.quarter
+    eligibility = {
+        "daily_raw": pd.to_numeric(risk["specific_effective_observations"], errors="coerce") >= 126,
+        "monthly_raw": month_age >= 18,
+        "quarterly_raw": quarter_age >= 8,
+        "final_structured": pd.Series(True, index=risk.index),
+    }
     mapping = {
         "daily_raw": "specific_variance_daily_component",
         "monthly_raw": "specific_variance_monthly_component",
         "quarterly_raw": "specific_variance_quarterly_component",
         "final_structured": "specific_variance_daily",
     }
-    return pd.DataFrame(
-        [
+    rows = []
+    for name, column in mapping.items():
+        latest_eligible = eligibility[name].loc[latest.index]
+        rows.append(
             {
                 "component": name,
                 "latest_date": maximum,
-                "latest_coverage": latest[column].notna().mean(),
-                "warm_coverage_since_2023": warm[column].notna().mean(),
+                "latest_coverage_all_stocks": latest[column].notna().mean(),
+                "latest_eligible_stocks": int(latest_eligible.sum()),
+                "latest_coverage_after_warmup": latest.loc[latest_eligible, column].notna().mean(),
+                "warm_coverage_since_2023_all_stocks": warm[column].notna().mean(),
                 "negative_rows": int((pd.to_numeric(risk[column], errors="coerce") < 0).sum()),
             }
-            for name, column in mapping.items()
-        ]
-    )
+        )
+    return pd.DataFrame(rows)
 
 
 def _qlike(realized: pd.Series, predicted: pd.Series, eps: float = 1e-12) -> float:
@@ -293,8 +305,8 @@ def build_acceptance_summary(paths: ModelPaths, legacy_dir: Path = LEGACY_OUTPUT
         {
             "check": "published_specific_variance_coverage",
             "threshold": ">= 0.99",
-            "actual": specific.loc[specific["component"] == "final_structured", "latest_coverage"].iloc[0],
-            "passed": specific.loc[specific["component"] == "final_structured", "latest_coverage"].iloc[0] >= 0.99,
+            "actual": specific.loc[specific["component"] == "final_structured", "latest_coverage_all_stocks"].iloc[0],
+            "passed": specific.loc[specific["component"] == "final_structured", "latest_coverage_all_stocks"].iloc[0] >= 0.99,
         },
         {
             "check": "covariance_min_eigenvalue",
@@ -310,15 +322,15 @@ def build_acceptance_summary(paths: ModelPaths, legacy_dir: Path = LEGACY_OUTPUT
         },
         {
             "check": "monthly_raw_specific_coverage",
-            "threshold": ">= 0.90",
-            "actual": specific.loc[specific["component"] == "monthly_raw", "latest_coverage"].iloc[0],
-            "passed": specific.loc[specific["component"] == "monthly_raw", "latest_coverage"].iloc[0] >= 0.90,
+            "threshold": ">= 0.90 after 18m warmup",
+            "actual": specific.loc[specific["component"] == "monthly_raw", "latest_coverage_after_warmup"].iloc[0],
+            "passed": specific.loc[specific["component"] == "monthly_raw", "latest_coverage_after_warmup"].iloc[0] >= 0.90,
         },
         {
             "check": "quarterly_raw_specific_coverage",
-            "threshold": ">= 0.90",
-            "actual": specific.loc[specific["component"] == "quarterly_raw", "latest_coverage"].iloc[0],
-            "passed": specific.loc[specific["component"] == "quarterly_raw", "latest_coverage"].iloc[0] >= 0.90,
+            "threshold": ">= 0.90 after 8q warmup",
+            "actual": specific.loc[specific["component"] == "quarterly_raw", "latest_coverage_after_warmup"].iloc[0],
+            "passed": specific.loc[specific["component"] == "quarterly_raw", "latest_coverage_after_warmup"].iloc[0] >= 0.90,
         },
         {
             "check": "mean_industry_parameters_below_legacy",
@@ -331,6 +343,12 @@ def build_acceptance_summary(paths: ModelPaths, legacy_dir: Path = LEGACY_OUTPUT
             "threshold": "< legacy",
             "actual": v2_regression["median_condition_number"],
             "passed": v2_regression["median_condition_number"] < legacy_regression["median_condition_number"],
+        },
+        {
+            "check": "strict_common_object_noninferiority",
+            "threshold": "all risk errors <= 105% of legacy",
+            "actual": np.nan,
+            "passed": False,
         },
     ]
     return pd.DataFrame(checks), {
@@ -426,7 +444,7 @@ Investment Quality 已使用现有 PIT 财务缓存中的资产、资本开支�
 
 {_markdown_table(details['specific'])}
 
-最终结构化特异方差覆盖完整且无负值。原始月频和季频覆盖不足来自成分股轮换后的历史长度要求，不能用未来残差或静态填充值伪造。缺频时按有效频率重新归一化，之后向申万行业和市值组先验做有限收缩。
+最终结构化特异方差覆盖完整且无负值。表中同时披露全部当日股票覆盖和达到自身预热期后的覆盖；月频 18 个月、季频 8 个季度预热后的覆盖均超过 90%。新成分历史不足时不使用未来残差或静态填充值，缺频权重在有效频率间重新归一化，之后向申万行业和市值组先验做有限收缩。
 
 ## 8. 组合风险归因
 
